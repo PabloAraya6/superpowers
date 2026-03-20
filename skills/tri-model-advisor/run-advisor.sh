@@ -26,6 +26,21 @@
 
 set -uo pipefail
 
+# --- macOS-compatible timeout ---
+# macOS doesn't have GNU timeout; use perl fallback
+if command -v gtimeout >/dev/null 2>&1; then
+  TIMEOUT_CMD="gtimeout"
+elif command -v timeout >/dev/null 2>&1; then
+  TIMEOUT_CMD="timeout"
+else
+  # Perl-based fallback for macOS
+  _timeout() {
+    local secs="$1"; shift
+    perl -e 'alarm shift; exec @ARGV' "$secs" "$@"
+  }
+  TIMEOUT_CMD="_timeout"
+fi
+
 # --- Parse arguments ---
 CODEX_PROMPT_FILE=""
 GEMINI_PROMPT_FILE=""
@@ -129,7 +144,7 @@ if [ "$CODEX_AVAILABLE" = true ]; then
     debug "Running: codex review $REVIEW_FLAGS"
     (
       env -u RUST_LOG -u RUST_BACKTRACE -u RUST_LIB_BACKTRACE \
-        timeout "$TIMEOUT" codex review $REVIEW_FLAGS \
+        $TIMEOUT_CMD "$TIMEOUT" codex review --skip-git-repo-check $REVIEW_FLAGS \
         > "$CODEX_OUT" 2>&1
     ) &
     CODEX_PID=$!
@@ -138,7 +153,7 @@ if [ "$CODEX_AVAILABLE" = true ]; then
     debug "Running: codex exec --full-auto -m $CODEX_MODEL"
     (
       env -u RUST_LOG -u RUST_BACKTRACE -u RUST_LIB_BACKTRACE \
-        timeout "$TIMEOUT" codex exec --full-auto -m "$CODEX_MODEL" "$CODEX_PROMPT" \
+        $TIMEOUT_CMD "$TIMEOUT" codex exec --full-auto --skip-git-repo-check -m "$CODEX_MODEL" "$CODEX_PROMPT" \
         > "$CODEX_OUT" 2>&1
     ) &
     CODEX_PID=$!
@@ -149,7 +164,7 @@ if [ "$GEMINI_AVAILABLE" = true ]; then
   GEMINI_PROMPT=$(cat "$GEMINI_PROMPT_FILE")
   debug "Running: gemini -p ... --approval-mode=yolo -m $GEMINI_MODEL"
   (
-    timeout "$TIMEOUT" gemini -p "$GEMINI_PROMPT" \
+    $TIMEOUT_CMD "$TIMEOUT" gemini -p "$GEMINI_PROMPT" \
       --approval-mode=yolo -m "$GEMINI_MODEL" --output-format text \
       > "$GEMINI_OUT" 2>&1
   ) &

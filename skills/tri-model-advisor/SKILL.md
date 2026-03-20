@@ -111,7 +111,7 @@ Run both simultaneously. Capture output to files for reliable reading.
 **Standard invocation:**
 ```bash
 env -u RUST_LOG -u RUST_BACKTRACE -u RUST_LIB_BACKTRACE \
-  codex exec --full-auto -m "${CCG_CODEX_MODEL:-o4-mini}" \
+  codex exec --full-auto --skip-git-repo-check -m "${CCG_CODEX_MODEL:-o4-mini}" \
   "$(cat /tmp/ccg-codex-prompt.md)" \
   > /tmp/ccg-codex-out.txt 2>&1 &
 CODEX_PID=$!
