@@ -1,0 +1,36 @@
+name: Sync with upstream
+
+on:
+  schedule:
+    - cron: '0 8 * * *'  # Daily at 8:00 UTC
+  workflow_dispatch:       # Manual trigger
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Sync upstream
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/obra/superpowers.git
+          git fetch upstream
+          git merge upstream/main --no-edit || {
+            git merge --abort
+            gh pr create \
+              --title "Upstream sync conflict - manual merge needed" \
+              --body "Automatic merge from obra/superpowers failed due to conflicts. Please resolve manually." \
+              --head upstream-sync-$(date +%Y%m%d) \
+              --base main || true
+            exit 0
+          }
+          git push origin main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
