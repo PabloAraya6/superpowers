@@ -11,26 +11,91 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      issues: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Sync upstream
+        id: sync
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git remote add upstream https://github.com/obra/superpowers.git
           git fetch upstream
-          git merge upstream/main --no-edit || {
+
+          # Check if there are new commits
+          LOCAL=$(git rev-parse HEAD)
+          UPSTREAM=$(git rev-parse upstream/main)
+
+          if [ "$LOCAL" = "$UPSTREAM" ]; then
+            echo "status=up-to-date" >> "$GITHUB_OUTPUT"
+            echo "No new changes from upstream."
+            exit 0
+          fi
+
+          # Count new commits
+          NEW_COMMITS=$(git rev-list HEAD..upstream/main --count)
+          echo "new_commits=$NEW_COMMITS" >> "$GITHUB_OUTPUT"
+
+          # Try merge
+          if git merge upstream/main --no-edit; then
+            echo "status=synced" >> "$GITHUB_OUTPUT"
+            git push origin main
+
+            # Get summary of what changed
+            SUMMARY=$(git log HEAD~${NEW_COMMITS}..HEAD --oneline | head -10)
+            echo "summary<<SUMMARY_EOF" >> "$GITHUB_OUTPUT"
+            echo "$SUMMARY" >> "$GITHUB_OUTPUT"
+            echo "SUMMARY_EOF" >> "$GITHUB_OUTPUT"
+          else
             git merge --abort
+            echo "status=conflict" >> "$GITHUB_OUTPUT"
+
+            # Create PR for manual resolution
             gh pr create \
               --title "Upstream sync conflict - manual merge needed" \
               --body "Automatic merge from obra/superpowers failed due to conflicts. Please resolve manually." \
               --head upstream-sync-$(date +%Y%m%d) \
               --base main || true
-            exit 0
-          }
-          git push origin main
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Notify — synced
+        if: steps.sync.outputs.status == 'synced'
+        run: |
+          gh issue create \
+            --title "🔄 Upstream sync: ${{ steps.sync.outputs.new_commits }} new commits merged" \
+            --body "$(cat <<'EOF'
+          Automatic sync from [obra/superpowers](https://github.com/obra/superpowers) completed successfully.
+
+          **New commits:**
+          ```
+          ${{ steps.sync.outputs.summary }}
+          ```
+
+          > This issue was created automatically. Close it after reading.
+          EOF
+          )" \
+            --label "upstream-sync"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Notify — conflict
+        if: steps.sync.outputs.status == 'conflict'
+        run: |
+          gh issue create \
+            --title "⚠️ Upstream sync CONFLICT — manual merge needed" \
+            --body "$(cat <<'EOF'
+          Automatic merge from [obra/superpowers](https://github.com/obra/superpowers) failed due to conflicts.
+
+          A PR has been created for manual resolution. Check open PRs.
+
+          > This likely means obra changed a file you also modified (probably `skills/tri-model-advisor/`).
+          EOF
+          )" \
+            --label "upstream-sync"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
