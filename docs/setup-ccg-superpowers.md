@@ -193,7 +193,7 @@ El fork tiene dos GitHub Actions:
 
 ### Modelos
 
-Por defecto usa `o4-mini` para Codex y `pro` para Gemini. Para cambiar:
+Por defecto usa `o3` para Codex y `gemini-2.5-pro` para Gemini. Para cambiar:
 
 ```bash
 # En tu shell profile (~/.zshrc)
