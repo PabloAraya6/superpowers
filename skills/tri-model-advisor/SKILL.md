@@ -1,122 +1,156 @@
 ---
 name: tri-model-advisor
-description: Use when the user invokes /ccg or requests multi-model perspectives on a problem, wanting parallel input from Codex and Gemini synthesized by Claude into a unified recommendation
+description: Use when the user invokes /ccg, requests multi-model perspectives, wants cross-validation from different AI providers, or needs parallel advisory input from Codex and Gemini synthesized into a unified recommendation
 ---
 
 # Tri-Model Advisor (CCG)
 
-Claude decomposes the request, sends specialized prompts to Codex and Gemini **in parallel**, collects structured artifacts, then synthesizes all three perspectives into one unified answer.
+```
+NEVER SYNTHESIZE WITHOUT READING BOTH ADVISOR OUTPUTS IN FULL.
+NEVER SKIP CONFLICT IDENTIFICATION — AGREEMENT WITHOUT TENSION IS SUSPICIOUSLY SHALLOW.
+NEVER EMBED FULL FILES IN PROMPTS — ADVISORS CAN READ THE WORKING DIRECTORY.
+```
 
-Both Codex and Gemini can read files from the working directory — you do NOT need to paste entire files into prompts. Reference file paths and let the advisors read them.
+Claude orchestrates a Mixture-of-Agents pattern: Codex and Gemini run as parallel proposers, Claude acts as the aggregator/synthesizer. An optional debate round lets advisors respond to each other's critiques.
 
 ## When to Use
 
 - User explicitly invokes `/ccg`
 - Architecture + UX/DX review needed in one pass
-- Cross-validation where multiple model perspectives add value
+- Cross-validation where a single perspective has blind spots
 - Code review from multiple angles (correctness vs. design vs. alternatives)
+- High-stakes decisions where "are we sure?" matters
 
 ## Requirements
 
 - **Codex CLI**: `codex` in PATH (`npm install -g @openai/codex`)
 - **Gemini CLI**: `gemini` in PATH (`npm install -g @google/gemini-cli`)
 
+## Mode Selection
+
+Classify the request before decomposing. The mode determines how prompts are specialized.
+
+```dot
+digraph mode_selection {
+  rankdir=LR;
+  node [shape=diamond, style=filled, fillcolor="#f0f0f0"];
+  classify [label="Classify\nrequest"];
+  node [shape=box, style=filled, fillcolor="#d4edda"];
+  review [label="REVIEW\nmode"];
+  arch [label="ARCHITECTURE\nmode"];
+  security [label="SECURITY\nmode"];
+  brainstorm [label="BRAINSTORM\nmode"];
+  general [label="GENERAL\nmode"];
+  classify -> review [label="code review\nor PR review"];
+  classify -> arch [label="system design\nor trade-offs"];
+  classify -> security [label="vulnerabilities\nor auth/data"];
+  classify -> brainstorm [label="alternatives\nor new ideas"];
+  classify -> general [label="everything\nelse"];
+}
+```
+
+| Mode | Codex Focus | Gemini Focus | Special |
+|---|---|---|---|
+| **REVIEW** | Correctness, bugs, logic errors, test gaps | Readability, DX, naming, patterns, alternatives | Use `codex review` subcommand |
+| **ARCHITECTURE** | Scalability, data flow, failure modes, performance | Trade-offs, prior art, migration paths, simplicity | Ask for ASCII diagrams |
+| **SECURITY** | OWASP top 10, injection, auth bypass, data exposure | Threat modeling, attack surface, compliance, docs | Both focus security |
+| **BRAINSTORM** | Feasibility analysis, implementation cost, risks | Creative alternatives, UX angles, novel approaches | Wider temperature |
+| **GENERAL** | Architecture, correctness, backend, performance | Alternatives, patterns, DX, documentation | Default split |
+
 ## Execution Protocol
 
-### Step 1: Verify Providers
+### Step 1: Verify and Classify
 
 ```bash
 codex --version 2>/dev/null && echo "codex: OK" || echo "codex: MISSING"
 gemini --version 2>/dev/null && echo "gemini: OK" || echo "gemini: MISSING"
 ```
 
-Continue with whatever is available.
+Classify the request into a mode. State the mode explicitly before proceeding.
 
 ### Step 2: Gather Context
 
-Before decomposing, identify:
+Identify what the advisors need to examine:
 
-- The files involved (paths the advisors should read)
-- The project language, framework, and structure
-- The specific question or decision
+- **File paths** they should read (both CLIs can read files from the working directory)
+- **Specific line ranges** or functions to focus on
+- **Project context**: language, framework, constraints
+- **The decision or question** being asked
 
-**Key insight:** Both CLIs operate in the project's working directory and can read files autonomously. Instead of pasting code into prompts, tell the advisors which files to examine. Only embed short snippets when highlighting a specific concern.
+REQUIRED INTEGRATION: If this is a debugging task, use `superpowers:systematic-debugging` first to identify the root cause, then invoke CCG for solution validation. If this is a brainstorming task, consider whether `superpowers:brainstorming` should run first to generate the option space.
 
-### Step 3: Decompose the Request
+### Step 3: Compose Advisor Prompts
 
-Split into two **self-contained** prompts. Each must include:
-- What the task is
-- Which files to read (by path)
-- What specific aspects to focus on
-- What format you want the answer in (bullet points, trade-offs table, etc.)
+Each prompt must be **self-contained** — the advisors have no access to your conversation history.
 
-**Codex focus areas:**
-- Architecture and system design
-- Correctness, logic errors, edge cases
-- Security risks and vulnerabilities
-- Performance bottlenecks
-- Test strategy and coverage gaps
+Every advisor prompt MUST include:
+1. **Role assignment**: what expert persona the advisor should adopt
+2. **Context**: project info, relevant file paths to read, constraints
+3. **Task**: exactly what to analyze or decide
+4. **Output format**: structured format you expect back (bullets, table, trade-offs)
+5. **Anti-slop directive**: "Be specific and concrete. No generic advice. Reference actual code and line numbers."
 
-**Gemini focus areas:**
-- Alternative approaches and trade-offs
-- Design patterns and best practices
-- UX/DX clarity and readability
-- Documentation quality
-- Edge-case usability
+Write prompts to temp files to avoid shell escaping issues:
 
-Define a **synthesis plan**: what conflicts you expect and how you will resolve them.
+```bash
+cat > /tmp/ccg-codex-prompt.md << 'CODEX_EOF'
+<prompt content>
+CODEX_EOF
+
+cat > /tmp/ccg-gemini-prompt.md << 'GEMINI_EOF'
+<prompt content>
+GEMINI_EOF
+```
+
+See `tri-model-advisor/advisor-prompts.md` for role templates per mode.
 
 ### Step 4: Invoke Advisors in Parallel
 
-Write each prompt to a temp file (avoids shell escaping issues with large prompts) and run both advisors simultaneously:
+Run both simultaneously. Capture output to files for reliable reading.
 
+**Standard invocation:**
 ```bash
-# Write prompts to temp files
-cat > /tmp/ccg-codex-prompt.md << 'CODEX_PROMPT'
-<your codex prompt here>
-CODEX_PROMPT
-
-cat > /tmp/ccg-gemini-prompt.md << 'GEMINI_PROMPT'
-<your gemini prompt here>
-GEMINI_PROMPT
-
-# Run both in parallel, capture output
-codex exec --full-auto "$(cat /tmp/ccg-codex-prompt.md)" > /tmp/ccg-codex-output.txt 2>&1 &
+env -u RUST_LOG -u RUST_BACKTRACE -u RUST_LIB_BACKTRACE \
+  codex exec --full-auto -m "${CCG_CODEX_MODEL:-o4-mini}" \
+  "$(cat /tmp/ccg-codex-prompt.md)" \
+  > /tmp/ccg-codex-out.txt 2>&1 &
 CODEX_PID=$!
 
-gemini -p "$(cat /tmp/ccg-gemini-prompt.md)" --approval-mode=yolo > /tmp/ccg-gemini-output.txt 2>&1 &
+gemini -p "$(cat /tmp/ccg-gemini-prompt.md)" \
+  --approval-mode=yolo -m "${CCG_GEMINI_MODEL:-pro}" \
+  --output-format text \
+  > /tmp/ccg-gemini-out.txt 2>&1 &
 GEMINI_PID=$!
 
-# Wait for both
 wait $CODEX_PID 2>/dev/null; CODEX_EXIT=$?
 wait $GEMINI_PID 2>/dev/null; GEMINI_EXIT=$?
-
-echo "Codex exited: $CODEX_EXIT | Gemini exited: $GEMINI_EXIT"
+echo "Codex exit: $CODEX_EXIT | Gemini exit: $GEMINI_EXIT"
 ```
 
-**CLI flags rationale:**
-- `codex exec --full-auto`: autonomous execution with sandbox protection (safer than `--dangerously-bypass-approvals-and-sandbox`). Use `--dangerously-bypass-approvals-and-sandbox` only if `--full-auto` fails due to sandbox restrictions.
-- `gemini -p --approval-mode=yolo`: headless mode, auto-approve all actions. `--yolo` flag is deprecated, use `--approval-mode=yolo`.
-- **Env cleanup for Codex**: if you see Rust stderr noise, prefix with `env -u RUST_LOG -u RUST_BACKTRACE -u RUST_LIB_BACKTRACE`
+**REVIEW mode** — use Codex's dedicated review subcommand:
+```bash
+codex review --uncommitted > /tmp/ccg-codex-out.txt 2>&1 &
+# or: codex review --base main
+```
 
-**Model override** (optional):
-- Codex: add `-m gpt-4.1` or `-m o4-mini` (default: `o4-mini`)
-- Gemini: add `-m pro` or `-m flash` (default: `auto` resolves to `gemini-2.5-pro`)
+**Fallback**: If `--full-auto` fails due to sandbox restrictions, retry Codex with `--dangerously-bypass-approvals-and-sandbox`.
 
-### Step 5: Collect and Read Output
+### Step 5: Validate Output
+
+Read both outputs. Before synthesizing, validate:
 
 ```bash
-echo "=== CODEX OUTPUT ==="
-cat /tmp/ccg-codex-output.txt
-echo ""
-echo "=== GEMINI OUTPUT ==="
-cat /tmp/ccg-gemini-output.txt
+cat /tmp/ccg-codex-out.txt
+cat /tmp/ccg-gemini-out.txt
 ```
 
-Validate output quality:
-- If empty or only error messages: mark that advisor as failed
-- If truncated (cut off mid-sentence): note it in Advisor Notes
-- If clearly garbage/hallucinated: discard and note it
+| Condition | Action |
+|---|---|
+| Output is empty | Mark advisor as FAILED, note in synthesis |
+| Output is only error/stack trace | Mark as FAILED, include error context |
+| Output is truncated (mid-sentence) | Mark as PARTIAL, use what's available |
+| Output is generic/unhelpful slop | Mark as LOW-QUALITY, reduce its weight |
+| Output is substantive | Mark as OK, full weight |
 
 ### Step 6: Persist Artifacts
 
@@ -125,88 +159,111 @@ mkdir -p .ccg/artifacts
 TIMESTAMP=$(date -u +"%Y%m%d-%H%M%S")
 ```
 
-Write each artifact to `.ccg/artifacts/<provider>-<timestamp>.md`:
+Write artifacts to `.ccg/artifacts/<provider>-<timestamp>.md`. See format in `tri-model-advisor/artifact-format.md`.
 
-```markdown
-# <Provider> Advisor Artifact
-- Provider: codex | gemini
-- Model: <model used>
-- Exit code: <code>
-- Created: <ISO timestamp>
+### Step 7: Synthesize (Aggregator Phase)
 
-## Task
-<the user's original request>
+This is the core of the MoA pattern. Claude acts as the aggregator.
 
-## Prompt Sent
-<the exact prompt>
+**Process:**
+1. Read both advisor outputs completely — do not skim
+2. Form your own independent analysis (you already have conversation context the advisors lacked)
+3. Identify every point where perspectives align or diverge
+4. For each divergence, determine WHY they disagree (different assumptions? different priorities? one has context the other lacks?)
+5. Produce a unified response
 
-## Response
-<complete output>
+**Output format:**
 
-## Key Recommendations
-<3-5 bullet distillation>
-```
+> ### Mode: [REVIEW|ARCHITECTURE|SECURITY|BRAINSTORM|GENERAL]
+>
+> ### Agreed
+> High-confidence recommendations where all three perspectives align.
+> Each item as: `recommendation — [Claude, Codex, Gemini all agree]`
+>
+> ### Conflicting
+> For each disagreement:
+> - **Point**: what the disagreement is about
+> - **Claude**: position + reasoning
+> - **Codex**: position + reasoning
+> - **Gemini**: position + reasoning
+> - **Resolution**: which perspective wins and why
+>
+> ### Final Direction
+> The chosen path with explicit rationale. Reference specific advisor arguments.
+>
+> ### Action Checklist
+> Ordered, immediately actionable steps. Each item concrete enough to execute.
+>
+> ### Confidence & Caveats
+> - Overall confidence: HIGH / MEDIUM / LOW
+> - Which advisor was most relevant for this specific request
+> - Missing perspectives, timeouts, quality issues
 
-### Step 7: Synthesize
+### Step 8: Debate Round (Optional)
 
-Combine both advisor outputs with your own Claude analysis. Produce a response with these sections:
+Trigger a debate round when:
+- Advisors strongly disagree on a critical point
+- You are unsure which perspective is correct
+- The user explicitly asks for deeper analysis
 
-#### Agreed
-Recommendations where all three perspectives align. High-confidence items.
-
-#### Conflicting
-For each disagreement:
-- **Claude**: <position>
-- **Codex**: <position>
-- **Gemini**: <position>
-- **Resolution**: which perspective wins and why
-
-#### Final Direction
-Your chosen recommendation. When advisors disagree, state which you weighted more and why. Common resolution patterns:
-- Codex and Gemini agree, Claude disagrees → likely go with the majority unless Claude has conversation context they lack
-- All three disagree → go with the most conservative/safe option, flag for user decision
-- One advisor produced garbage → weight the other two
-
-#### Action Checklist
-Ordered, actionable next steps. Each item concrete enough to execute immediately.
-
-#### Advisor Notes
-Caveats: unavailable advisors, timeouts, truncated output, low-confidence areas, which advisor seemed most relevant for this particular request.
-
-## Prompt Engineering Guidelines
-
-1. **Reference files, don't paste them.** Say "Read src/auth/middleware.ts and analyze the session handling" — the advisor can read it.
-2. **Be specific about what to analyze.** "Check for SQL injection in the query builder at lines 45-80 of db/queries.ts" beats "review this file."
-3. **State the decision explicitly.** "Should we use Redis or PostgreSQL for session storage given: 50k concurrent users, <10ms read latency requirement, existing PostgreSQL infrastructure?"
-4. **Constrain the output format.** "Answer as: 1) Recommendation (one sentence), 2) Three strongest arguments for, 3) Three strongest arguments against, 4) Risk assessment."
-5. **Match task to provider.** For pure code review, Codex is stronger. For brainstorming alternatives, Gemini often surfaces more diverse options.
-
-## Special Modes
-
-### Code Review Mode
-If the request is specifically about code review, use Codex's dedicated review subcommand:
+**Protocol**: Send each advisor the other's key argument and ask them to respond:
 
 ```bash
-codex review --uncommitted  # review uncommitted changes
-codex review --base main    # review changes vs main branch
+# Write debate prompts including the other advisor's position
+cat > /tmp/ccg-codex-debate.md << 'DEBATE_EOF'
+A peer reviewer (Gemini) analyzed the same problem and concluded:
+<paste Gemini's key argument>
+
+You previously recommended:
+<paste Codex's key argument>
+
+Do you still hold your position? If so, provide stronger evidence.
+If the peer raises valid points, revise your recommendation.
+Be specific — reference code and concrete trade-offs.
+DEBATE_EOF
 ```
 
-This gives more structured review output than a generic prompt. Run Gemini's review in parallel with a prompt-based approach for the complementary perspective.
+Run the debate prompts the same way as Step 4. Then re-synthesize with the enriched context.
 
-## Fallbacks
+**Limit**: Maximum 1 debate round. More rounds do not reliably improve accuracy (per ICLR 2025 MAD research). The value is in surfacing stronger evidence, not in reaching forced consensus.
 
-- **One provider missing**: Continue with available provider + Claude analysis. Note the missing perspective and what blind spots it creates.
-- **Both missing**: Claude-only analysis. Recommend the user install them.
-- **Provider error or timeout**: Note in Advisor Notes. Do not retry — move on.
-- **Empty or garbage output**: Discard, note, rely on remaining perspectives.
-- **Sandbox restriction blocks Codex**: Retry with `--dangerously-bypass-approvals-and-sandbox` and inform the user.
-
-## Cleanup
-
-After synthesis is complete, clean up temp files:
+### Step 9: Cleanup
 
 ```bash
-rm -f /tmp/ccg-codex-prompt.md /tmp/ccg-gemini-prompt.md /tmp/ccg-codex-output.txt /tmp/ccg-gemini-output.txt
+rm -f /tmp/ccg-codex-prompt.md /tmp/ccg-gemini-prompt.md \
+      /tmp/ccg-codex-out.txt /tmp/ccg-gemini-out.txt \
+      /tmp/ccg-codex-debate.md /tmp/ccg-gemini-debate.md
 ```
 
 Artifacts in `.ccg/artifacts/` are kept for future reference.
+
+## Integration with Superpowers
+
+| Situation | Integration |
+|---|---|
+| Debugging task | Run `superpowers:systematic-debugging` first, then CCG to validate the fix |
+| Brainstorming | Run `superpowers:brainstorming` first, then CCG to evaluate top options |
+| Implementation plan | Run CCG, then pass the action checklist to `superpowers:writing-plans` |
+| Code review | Run CCG in REVIEW mode, then `superpowers:verification-before-completion` |
+| Complex implementation | CCG for design, then `superpowers:subagent-driven-development` for execution |
+
+## Red Flags — Stop If You Catch Yourself
+
+- Synthesizing before reading both outputs completely
+- Claiming "all three agree" without identifying at least one tension point
+- Pasting entire files (>50 lines) into prompts instead of referencing paths
+- Skipping mode classification and using GENERAL for everything
+- Running debate rounds when advisors already agree (wastes tokens)
+- Ignoring a dissenting advisor because the other two agree (the dissent may be the insight)
+- Producing an action checklist with vague items like "review the code" or "consider alternatives"
+
+## Rationalization Prevention
+
+| Excuse | Reality |
+|---|---|
+| "Simple question, don't need multi-model" | If the user invoked /ccg, they want multi-model. Honor the request. |
+| "Codex/Gemini will just say the same thing" | Different training data, different biases. Disagreements are the valuable signal. |
+| "I'll just ask one advisor to save time" | The whole point is diverse perspectives. One advisor is just a more expensive Claude. |
+| "Debate round will improve this" | Only trigger debate on genuine disagreement. Forced debate degrades quality (ICLR 2025). |
+| "The advisor output was bad so I'll ignore it" | Mark it as low-quality in Advisor Notes. Never silently discard — the user should know. |
+| "I already know the answer, advisors are redundant" | Your confidence is exactly when blind spots are most dangerous. Run the protocol. |
