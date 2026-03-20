@@ -1,0 +1,68 @@
+name: Keepalive
+
+on:
+  schedule:
+    - cron: '0 12 * * 1'  # Every Monday at 12:00 UTC
+  workflow_dispatch:
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check repo activity
+        id: check
+        run: |
+          # Get date of last commit
+          LAST_COMMIT_DATE=$(git log -1 --format="%ct")
+          NOW=$(date +%s)
+          DAYS_SINCE=$(( (NOW - LAST_COMMIT_DATE) / 86400 ))
+
+          echo "days_since=$DAYS_SINCE" >> "$GITHUB_OUTPUT"
+          echo "Last commit was $DAYS_SINCE days ago."
+
+          if [ "$DAYS_SINCE" -ge 50 ]; then
+            echo "status=warning" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=ok" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Warn approaching inactivity
+        if: steps.check.outputs.status == 'warning'
+        run: |
+          gh issue create \
+            --title "⏰ Fork approaching 60-day inactivity limit (${{ steps.check.outputs.days_since }} days)" \
+            --body "$(cat <<'EOF'
+          GitHub disables scheduled workflows on forks after 60 days without activity.
+
+          **Last commit was ${{ steps.check.outputs.days_since }} days ago.**
+
+          To keep the sync workflow alive, do ONE of these:
+          1. Push any commit to the repo
+          2. Go to Actions → "Sync with upstream" → Run workflow
+          3. Create/close any issue
+
+          If you do nothing, the daily sync will stop in ~$((60 - ${{ steps.check.outputs.days_since }})) days.
+          EOF
+          )" \
+            --label "upstream-sync"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Keep workflows alive
+        if: steps.check.outputs.status == 'warning'
+        run: |
+          # Creating an issue above counts as activity, but as extra safety:
+          # update a timestamp file to guarantee a commit exists
+          echo "Last keepalive: $(date -u +%Y-%m-%dT%H:%M:%SZ)" > .github/.keepalive
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .github/.keepalive
+          git commit -m "chore: keepalive — prevent GitHub from disabling scheduled workflows" || true
+          git push origin main || true
