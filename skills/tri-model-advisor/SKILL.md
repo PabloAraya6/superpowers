@@ -111,14 +111,13 @@ Run both simultaneously. Capture output to files for reliable reading.
 **Standard invocation:**
 ```bash
 env -u RUST_LOG -u RUST_BACKTRACE -u RUST_LIB_BACKTRACE \
-  codex exec --full-auto --skip-git-repo-check -m "${CCG_CODEX_MODEL:-o3}" \
+  codex exec --full-auto --skip-git-repo-check \
   "$(cat /tmp/ccg-codex-prompt.md)" \
   > /tmp/ccg-codex-out.txt 2>&1 &
 CODEX_PID=$!
 
 gemini -p "$(cat /tmp/ccg-gemini-prompt.md)" \
-  --approval-mode=yolo -m "${CCG_GEMINI_MODEL:-gemini-2.5-pro}" \
-  --output-format text \
+  --approval-mode=yolo -m auto \
   > /tmp/ccg-gemini-out.txt 2>&1 &
 GEMINI_PID=$!
 

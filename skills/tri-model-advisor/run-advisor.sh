@@ -46,8 +46,8 @@ CODEX_PROMPT_FILE=""
 GEMINI_PROMPT_FILE=""
 TASK="Tri-model advisor query"
 MODE="general"
-CODEX_MODEL="${CCG_CODEX_MODEL:-o3}"
-GEMINI_MODEL="${CCG_GEMINI_MODEL:-gemini-2.5-pro}"
+CODEX_MODEL="${CCG_CODEX_MODEL:-}"    # empty = codex CLI default (latest)
+GEMINI_MODEL="${CCG_GEMINI_MODEL:-auto}"  # "auto" = gemini resolves to best available
 TIMEOUT="${CCG_TIMEOUT:-120}"
 REVIEW_BASE=""
 REVIEW_UNCOMMITTED=false
@@ -153,7 +153,7 @@ if [ "$CODEX_AVAILABLE" = true ]; then
     debug "Running: codex exec --full-auto -m $CODEX_MODEL"
     (
       env -u RUST_LOG -u RUST_BACKTRACE -u RUST_LIB_BACKTRACE \
-        $TIMEOUT_CMD "$TIMEOUT" codex exec --full-auto --skip-git-repo-check -m "$CODEX_MODEL" "$CODEX_PROMPT" \
+        $TIMEOUT_CMD "$TIMEOUT" codex exec --full-auto --skip-git-repo-check ${CODEX_MODEL:+-m "$CODEX_MODEL"} "$CODEX_PROMPT" \
         > "$CODEX_OUT" 2>&1
     ) &
     CODEX_PID=$!
@@ -165,7 +165,7 @@ if [ "$GEMINI_AVAILABLE" = true ]; then
   debug "Running: gemini -p ... --approval-mode=yolo -m $GEMINI_MODEL"
   (
     $TIMEOUT_CMD "$TIMEOUT" gemini -p "$GEMINI_PROMPT" \
-      --approval-mode=yolo -m "$GEMINI_MODEL" --output-format text \
+      --approval-mode=yolo ${GEMINI_MODEL:+-m "$GEMINI_MODEL"} --output-format text \
       > "$GEMINI_OUT" 2>&1
   ) &
   GEMINI_PID=$!

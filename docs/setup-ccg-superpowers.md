@@ -193,13 +193,19 @@ El fork tiene dos GitHub Actions:
 
 ### Modelos
 
-Por defecto usa `o3` para Codex y `gemini-2.5-pro` para Gemini. Para cambiar:
+Por defecto usa el **modelo tope de gama de cada CLI** automaticamente:
+- **Codex**: no se pasa `-m`, usa el default del CLI (se actualiza con `npm update -g @openai/codex`)
+- **Gemini**: usa `-m auto`, que siempre resuelve al mejor modelo disponible
+
+Para forzar un modelo especifico:
 
 ```bash
 # En tu shell profile (~/.zshrc)
-export CCG_CODEX_MODEL="gpt-4.1"
-export CCG_GEMINI_MODEL="flash"
+export CCG_CODEX_MODEL="o3"         # forzar o3
+export CCG_GEMINI_MODEL="flash"     # forzar flash (mas rapido, menos capaz)
 ```
+
+Para mantenerte siempre en el ultimo modelo: **no setees estas variables** y manten los CLIs actualizados.
 
 ### Timeout
 
