@@ -1,90 +1,162 @@
 #!/usr/bin/env bash
-# run-advisor.sh — Invoke an external AI advisor and persist a structured artifact.
+# run-advisor.sh — Run Codex and Gemini advisors in parallel, persist artifacts.
 #
-# Usage: run-advisor.sh <provider> <prompt> [original_task]
-#   provider:       codex | gemini
-#   prompt:         The full prompt to send (self-contained with context)
-#   original_task:  (optional) The user's original request for artifact metadata
+# Usage:
+#   run-advisor.sh <codex-prompt-file> <gemini-prompt-file> [original-task]
 #
-# Output: Writes artifact to .ccg/artifacts/<provider>-<timestamp>.md
-#         Prints the raw advisor output to stdout.
+# Both prompt files are paths to markdown files containing the full prompt.
+# Output: Writes artifacts to .ccg/artifacts/ and prints both outputs.
 #
-# Exit codes: 0 = success, 1 = missing binary, 2 = advisor error
+# Environment variables:
+#   CCG_TIMEOUT      Timeout per advisor in seconds (default: 120)
+#   CCG_CODEX_MODEL  Codex model override (default: o4-mini)
+#   CCG_GEMINI_MODEL Gemini model override (default: auto)
+#
+# Exit: 0 if at least one advisor succeeded, 1 if both failed.
 
-set -euo pipefail
+set -uo pipefail
 
-PROVIDER="${1:?Usage: run-advisor.sh <provider> <prompt> [original_task]}"
-PROMPT="${2:?Usage: run-advisor.sh <provider> <prompt> [original_task]}"
-ORIGINAL_TASK="${3:-$PROMPT}"
+CODEX_PROMPT_FILE="${1:?Usage: run-advisor.sh <codex-prompt-file> <gemini-prompt-file> [original-task]}"
+GEMINI_PROMPT_FILE="${2:?Usage: run-advisor.sh <codex-prompt-file> <gemini-prompt-file> [original-task]}"
+ORIGINAL_TASK="${3:-Tri-model advisor query}"
+
 TIMEOUT="${CCG_TIMEOUT:-120}"
-
-# --- Verify binary ---
-check_binary() {
-  command -v "$1" >/dev/null 2>&1
-}
-
-case "$PROVIDER" in
-  codex)
-    if ! check_binary codex; then
-      echo "ERROR: codex CLI not found. Install with: npm install -g @openai/codex" >&2
-      exit 1
-    fi
-    ;;
-  gemini)
-    if ! check_binary gemini; then
-      echo "ERROR: gemini CLI not found. Install with: npm install -g @google/gemini-cli" >&2
-      exit 1
-    fi
-    ;;
-  *)
-    echo "ERROR: Unknown provider '$PROVIDER'. Use 'codex' or 'gemini'." >&2
-    exit 1
-    ;;
-esac
-
-# --- Run advisor ---
+CODEX_MODEL="${CCG_CODEX_MODEL:-o4-mini}"
+GEMINI_MODEL="${CCG_GEMINI_MODEL:-auto}"
 TIMESTAMP=$(date -u +"%Y%m%d-%H%M%S")
-RAW_OUTPUT=""
-EXIT_CODE=0
-
-case "$PROVIDER" in
-  codex)
-    # Strip Rust env vars that pollute stderr
-    RAW_OUTPUT=$(env -u RUST_LOG -u RUST_BACKTRACE -u RUST_LIB_BACKTRACE \
-      timeout "$TIMEOUT" codex exec --dangerously-bypass-approvals-and-sandbox "$PROMPT" 2>&1) || EXIT_CODE=$?
-    ;;
-  gemini)
-    RAW_OUTPUT=$(timeout "$TIMEOUT" gemini -p "$PROMPT" --yolo 2>&1) || EXIT_CODE=$?
-    ;;
-esac
-
-# --- Print raw output to stdout ---
-echo "$RAW_OUTPUT"
-
-# --- Write artifact ---
 ARTIFACT_DIR=".ccg/artifacts"
+
 mkdir -p "$ARTIFACT_DIR"
 
-SLUG=$(echo "$ORIGINAL_TASK" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '-' | head -c 40 | sed 's/-$//')
-ARTIFACT_FILE="$ARTIFACT_DIR/${PROVIDER}-${SLUG}-${TIMESTAMP}.md"
+# --- Temp files for output ---
+CODEX_OUT=$(mktemp /tmp/ccg-codex-XXXXXX.txt)
+GEMINI_OUT=$(mktemp /tmp/ccg-gemini-XXXXXX.txt)
+trap 'rm -f "$CODEX_OUT" "$GEMINI_OUT"' EXIT
 
-cat > "$ARTIFACT_FILE" <<ARTIFACT
-# ${PROVIDER} advisor artifact
-- Provider: ${PROVIDER}
-- Exit code: ${EXIT_CODE}
+# --- Check binaries ---
+CODEX_AVAILABLE=false
+GEMINI_AVAILABLE=false
+
+if command -v codex >/dev/null 2>&1; then
+  CODEX_AVAILABLE=true
+fi
+
+if command -v gemini >/dev/null 2>&1; then
+  GEMINI_AVAILABLE=true
+fi
+
+if [ "$CODEX_AVAILABLE" = false ] && [ "$GEMINI_AVAILABLE" = false ]; then
+  echo "ERROR: Neither codex nor gemini CLI found." >&2
+  echo "Install: npm install -g @openai/codex @google/gemini-cli" >&2
+  exit 1
+fi
+
+# --- Run advisors in parallel ---
+CODEX_PID=""
+GEMINI_PID=""
+CODEX_EXIT="-1"
+GEMINI_EXIT="-1"
+
+if [ "$CODEX_AVAILABLE" = true ]; then
+  CODEX_PROMPT=$(cat "$CODEX_PROMPT_FILE")
+  (
+    env -u RUST_LOG -u RUST_BACKTRACE -u RUST_LIB_BACKTRACE \
+      timeout "$TIMEOUT" codex exec --full-auto -m "$CODEX_MODEL" "$CODEX_PROMPT" \
+      > "$CODEX_OUT" 2>&1
+  ) &
+  CODEX_PID=$!
+fi
+
+if [ "$GEMINI_AVAILABLE" = true ]; then
+  GEMINI_PROMPT=$(cat "$GEMINI_PROMPT_FILE")
+  (
+    timeout "$TIMEOUT" gemini -p "$GEMINI_PROMPT" --approval-mode=yolo -m "$GEMINI_MODEL" \
+      > "$GEMINI_OUT" 2>&1
+  ) &
+  GEMINI_PID=$!
+fi
+
+# --- Wait and collect ---
+if [ -n "$CODEX_PID" ]; then
+  wait "$CODEX_PID" 2>/dev/null
+  CODEX_EXIT=$?
+fi
+
+if [ -n "$GEMINI_PID" ]; then
+  wait "$GEMINI_PID" 2>/dev/null
+  GEMINI_EXIT=$?
+fi
+
+# --- Write artifacts ---
+write_artifact() {
+  local provider="$1"
+  local model="$2"
+  local exit_code="$3"
+  local prompt_file="$4"
+  local output_file="$5"
+
+  local artifact_file="$ARTIFACT_DIR/${provider}-${TIMESTAMP}.md"
+
+  cat > "$artifact_file" <<ARTIFACT
+# ${provider} advisor artifact
+- Provider: ${provider}
+- Model: ${model}
+- Exit code: ${exit_code}
 - Created: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-## Original task
+## Task
 ${ORIGINAL_TASK}
 
 ## Prompt sent
-${PROMPT}
+$(cat "$prompt_file")
 
-## Raw output
-${RAW_OUTPUT}
+## Response
+$(cat "$output_file")
 ARTIFACT
 
-echo "" >&2
-echo "Artifact saved: $ARTIFACT_FILE" >&2
+  echo "$artifact_file"
+}
 
-exit $EXIT_CODE
+if [ "$CODEX_AVAILABLE" = true ]; then
+  CODEX_ARTIFACT=$(write_artifact "codex" "$CODEX_MODEL" "$CODEX_EXIT" "$CODEX_PROMPT_FILE" "$CODEX_OUT")
+fi
+
+if [ "$GEMINI_AVAILABLE" = true ]; then
+  GEMINI_ARTIFACT=$(write_artifact "gemini" "$GEMINI_MODEL" "$GEMINI_EXIT" "$GEMINI_PROMPT_FILE" "$GEMINI_OUT")
+fi
+
+# --- Print results ---
+echo "=========================================="
+echo "  CCG Tri-Model Advisor Results"
+echo "=========================================="
+echo ""
+
+if [ "$CODEX_AVAILABLE" = true ]; then
+  echo "--- CODEX (model: $CODEX_MODEL, exit: $CODEX_EXIT) ---"
+  cat "$CODEX_OUT"
+  echo ""
+  echo "Artifact: $CODEX_ARTIFACT"
+else
+  echo "--- CODEX: NOT AVAILABLE ---"
+fi
+
+echo ""
+
+if [ "$GEMINI_AVAILABLE" = true ]; then
+  echo "--- GEMINI (model: $GEMINI_MODEL, exit: $GEMINI_EXIT) ---"
+  cat "$GEMINI_OUT"
+  echo ""
+  echo "Artifact: $GEMINI_ARTIFACT"
+else
+  echo "--- GEMINI: NOT AVAILABLE ---"
+fi
+
+echo ""
+echo "=========================================="
+
+# Exit 0 if at least one succeeded
+if [ "$CODEX_EXIT" = "0" ] || [ "$GEMINI_EXIT" = "0" ]; then
+  exit 0
+else
+  exit 1
+fi
