@@ -61,3 +61,38 @@ function die(msg) {
 // --- Signal Handling ---
 process.on('SIGINT', () => process.exit(130));
 process.on('SIGTERM', () => process.exit(143));
+
+// --- Sanitization ---
+
+function sanitizeContent(content, maxLength = 4000) {
+  if (!content) return '';
+  let s = content.length > maxLength ? content.slice(0, maxLength) : content;
+
+  // Fix dangling surrogate pairs
+  if (s.length > 0) {
+    const lastCode = s.charCodeAt(s.length - 1);
+    if (lastCode >= 0xD800 && lastCode <= 0xDBFF) {
+      s = s.slice(0, -1);
+    }
+  }
+
+  // Escape XML-like delimiter tags that could break prompt structure
+  s = s.replace(/<(\/?)(system-instructions)[^>]*>/gi, '[$1$2]');
+  s = s.replace(/<(\/?)(SYSTEM)[^>]*>/gi, '[$1$2]');
+  s = s.replace(/<(\/?)(INSTRUCTIONS)[^>]*>/gi, '[$1$2]');
+
+  // Escape untrusted file content delimiters
+  s = s.replace(/^-{3}\s*(UNTRUSTED FILE CONTENT|END UNTRUSTED FILE CONTENT)/gm, '[-- $1');
+
+  return s;
+}
+
+function sanitizeFilepath(filepath) {
+  return filepath.replace(/[\n\r]/g, '').replace(/-{3}/g, '\u2014');
+}
+
+function wrapUntrustedFile(filepath, content) {
+  const safePath = sanitizeFilepath(filepath);
+  const sanitized = sanitizeContent(content);
+  return `--- UNTRUSTED FILE CONTENT (${safePath}) ---\n${sanitized}\n--- END UNTRUSTED FILE CONTENT ---`;
+}
