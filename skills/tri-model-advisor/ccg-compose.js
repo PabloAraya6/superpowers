@@ -126,3 +126,43 @@ function readAndWrapFiles(filePaths, cwd) {
 
   return wrapped;
 }
+
+// --- Project Context Detection ---
+
+function readJsonSafe(filePath) {
+  try {
+    return JSON.parse(readFileSync(filePath, 'utf-8'));
+  } catch {
+    return null;
+  }
+}
+
+function detectProjectContext(cwd) {
+  const context = [];
+
+  const pkg = readJsonSafe(join(cwd, 'package.json'));
+  if (pkg) {
+    if (pkg.name) context.push(`Project: ${pkg.name}`);
+    const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+    if (allDeps['next']) context.push(`Framework: Next.js ${allDeps['next']}`);
+    else if (allDeps['react']) context.push(`Framework: React ${allDeps['react']}`);
+    else if (allDeps['vue']) context.push(`Framework: Vue ${allDeps['vue']}`);
+    else if (allDeps['svelte']) context.push(`Framework: Svelte ${allDeps['svelte']}`);
+    else if (allDeps['@angular/core']) context.push(`Framework: Angular ${allDeps['@angular/core']}`);
+    const notable = ['drizzle-orm', 'prisma', 'better-auth', 'tailwindcss', 'vitest', 'jest', 'express', 'fastify', 'hono'];
+    const found = notable.filter(d => d in allDeps);
+    if (found.length) context.push(`Key deps: ${found.join(', ')}`);
+  }
+
+  if (existsSync(join(cwd, 'tsconfig.json'))) {
+    context.push('Language: TypeScript');
+  } else if (existsSync(join(cwd, 'pyproject.toml')) || existsSync(join(cwd, 'setup.py'))) {
+    context.push('Language: Python');
+  } else if (existsSync(join(cwd, 'go.mod'))) {
+    context.push('Language: Go');
+  } else if (existsSync(join(cwd, 'Cargo.toml'))) {
+    context.push('Language: Rust');
+  }
+
+  return context.join('\n') || 'No project context detected';
+}
