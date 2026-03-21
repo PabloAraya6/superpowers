@@ -275,3 +275,64 @@ function composePrompt({ preamble, projectContext, task, focus, fileContents }) 
 
   return sections.join('\n\n');
 }
+
+// --- Provider Spawn ---
+
+const PROVIDER_CONFIG = {
+  codex: {
+    binary: 'codex',
+    buildArgs: (model) => [
+      'exec', '--full-auto', '--skip-git-repo-check',
+      ...(model ? ['-m', model] : []),
+      '-'
+    ],
+    envCleanup: ['RUST_LOG', 'RUST_BACKTRACE', 'RUST_LIB_BACKTRACE']
+  },
+  gemini: {
+    binary: 'gemini',
+    buildArgs: (model) => [
+      '--approval-mode=yolo',
+      ...(model ? ['-m', model] : ['-m', 'auto']),
+      '--output-format', 'text'
+    ],
+    envCleanup: []
+  }
+};
+
+function spawnProvider(provider, composedPrompt, model, timeoutMs) {
+  const config = PROVIDER_CONFIG[provider];
+
+  const env = { ...process.env };
+  for (const key of config.envCleanup) delete env[key];
+
+  return new Promise((resolve) => {
+    const startTime = Date.now();
+    const child = spawn(config.binary, config.buildArgs(model), {
+      cwd: process.cwd(),
+      env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+
+    child.stdout.on('data', (d) => { stdout += d.toString(); });
+    child.stderr.on('data', (d) => { stderr += d.toString(); });
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+      setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 5000);
+    }, timeoutMs);
+
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      const wallTime = Math.round((Date.now() - startTime) / 1000);
+      resolve({ stdout, stderr, exitCode: code ?? 1, timedOut, wallTime });
+    });
+
+    child.stdin.write(composedPrompt);
+    child.stdin.end();
+  });
+}
