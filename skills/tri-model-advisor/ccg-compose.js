@@ -357,3 +357,44 @@ function validateOutput(stdout, exitCode, timedOut) {
 
   return 'OK';
 }
+
+// --- Artifact Writing ---
+
+function writeArtifact({ provider, model, mode, task, prompt, stdout, stderr, exitCode, quality, wallTime }) {
+  const dir = join(process.cwd(), '.ccg', 'artifacts');
+  mkdirSync(dir, { recursive: true });
+
+  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const filename = `${provider}-${ts}.md`;
+  const filepath = join(dir, filename);
+
+  const body = [
+    `# ${provider} advisor artifact`,
+    '',
+    '| Field | Value |',
+    '|---|---|',
+    `| Provider | ${provider} |`,
+    `| Model | ${model || '(default)'} |`,
+    `| Mode | ${mode} |`,
+    `| Exit code | ${exitCode} |`,
+    `| Quality | ${quality} |`,
+    `| Created | ${new Date().toISOString()} |`,
+    `| Wall time | ${wallTime}s |`,
+    '',
+    '## Task',
+    task,
+    '',
+    '## Prompt Sent',
+    prompt,
+    '',
+    '## Response',
+    stdout || '(no output)',
+    '',
+    '## Stderr Log',
+    stderr || '(none)',
+    ''
+  ].join('\n');
+
+  writeFileSync(filepath, body, 'utf-8');
+  return filepath;
+}
