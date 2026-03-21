@@ -96,3 +96,33 @@ function wrapUntrustedFile(filepath, content) {
   const sanitized = sanitizeContent(content);
   return `--- UNTRUSTED FILE CONTENT (${safePath}) ---\n${sanitized}\n--- END UNTRUSTED FILE CONTENT ---`;
 }
+
+// --- File Reading ---
+
+function readAndWrapFiles(filePaths, cwd) {
+  const MAX_PER_FILE = 4000;
+  const MAX_TOTAL = 30000;
+  const wrapped = [];
+  let totalChars = 0;
+
+  for (const relPath of filePaths) {
+    const absPath = resolve(cwd, relPath);
+    if (!existsSync(absPath)) {
+      process.stderr.write(`[ccg] Warning: file not found, skipping: ${relPath}\n`);
+      continue;
+    }
+
+    const raw = readFileSync(absPath, 'utf-8');
+    const truncated = raw.slice(0, MAX_PER_FILE);
+
+    if (totalChars + truncated.length > MAX_TOTAL) {
+      process.stderr.write(`[ccg] Warning: total file content cap (${MAX_TOTAL} chars) reached. Skipping: ${relPath}\n`);
+      break;
+    }
+
+    wrapped.push(wrapUntrustedFile(relPath, truncated));
+    totalChars += truncated.length;
+  }
+
+  return wrapped;
+}
