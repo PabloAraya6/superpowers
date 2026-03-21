@@ -336,3 +336,24 @@ function spawnProvider(provider, composedPrompt, model, timeoutMs) {
     child.stdin.end();
   });
 }
+
+// --- Output Validation ---
+
+function validateOutput(stdout, exitCode, timedOut) {
+  if (timedOut) return 'TIMEOUT';
+  if (!stdout || stdout.length === 0) return 'FAILED';
+  if (exitCode !== 0 && stdout.length < 50) return 'FAILED';
+
+  const lines = stdout.split('\n');
+
+  const errorPatterns = /^(Error:|FATAL:|Traceback \(|panic:|Exception in)/i;
+  const errorLines = lines.filter(l => errorPatterns.test(l.trim()));
+  if (errorLines.length > lines.length / 2 && lines.length > 2) return 'FAILED';
+
+  const lastChar = stdout.trim().slice(-1);
+  if (lines.length > 10 && !/[.!?}\])`"]/.test(lastChar)) return 'PARTIAL';
+
+  if (stdout.length < 200 && lines.length < 5) return 'LOW-QUALITY';
+
+  return 'OK';
+}
