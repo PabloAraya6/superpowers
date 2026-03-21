@@ -398,3 +398,64 @@ function writeArtifact({ provider, model, mode, task, prompt, stdout, stderr, ex
   writeFileSync(filepath, body, 'utf-8');
   return filepath;
 }
+
+// --- Main ---
+
+async function main() {
+  const args = parseCliArgs();
+  const preamble = PREAMBLES[args.mode][args.provider];
+
+  // 1. Detect project context
+  let projectContext = detectProjectContext(process.cwd());
+  if (args.context) {
+    projectContext = args.context + '\n' + projectContext;
+  }
+
+  // 2. Read and wrap files
+  const fileContents = readAndWrapFiles(args.files, process.cwd());
+
+  // 3. Compose prompt
+  const composedPrompt = composePrompt({
+    preamble,
+    projectContext,
+    task: args.task,
+    focus: args.focus,
+    fileContents,
+  });
+
+  // 4. Spawn provider (let spawn fail naturally if binary missing)
+  process.stderr.write(`[ccg] Spawning ${args.provider} (mode: ${args.mode}, timeout: ${args.timeout / 1000}s)...\n`);
+  const result = await spawnProvider(args.provider, composedPrompt, args.model, args.timeout);
+
+  // 5. Validate output
+  const quality = validateOutput(result.stdout, result.exitCode, result.timedOut);
+
+  // 6. Write artifact
+  const artifactPath = writeArtifact({
+    provider: args.provider,
+    model: args.model,
+    mode: args.mode,
+    task: args.task,
+    prompt: composedPrompt,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    exitCode: result.exitCode,
+    quality,
+    wallTime: result.wallTime,
+  });
+
+  // 7. Print response to stdout
+  process.stdout.write(result.stdout);
+
+  // 8. Print metadata to stderr
+  process.stderr.write(`[ccg] Done: quality=${quality} exit=${result.exitCode} time=${result.wallTime}s artifact=${artifactPath}\n`);
+
+  // 9. Exit
+  const failStates = ['FAILED', 'TIMEOUT'];
+  process.exit(failStates.includes(quality) ? 1 : 0);
+}
+
+main().catch((err) => {
+  process.stderr.write(`[ccg] Fatal: ${err.message}\n`);
+  process.exit(1);
+});
