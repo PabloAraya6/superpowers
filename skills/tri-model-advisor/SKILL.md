@@ -23,6 +23,7 @@ Claude orchestrates a Mixture-of-Agents pattern: Codex and Gemini run as paralle
 
 ## Requirements
 
+- **Node.js 18.3+**: required for `util.parseArgs()`
 - **Codex CLI**: `codex` in PATH (`npm install -g @openai/codex`)
 - **Gemini CLI**: `gemini` in PATH (`npm install -g @google/gemini-cli`)
 
@@ -79,88 +80,39 @@ Identify what the advisors need to examine:
 
 REQUIRED INTEGRATION: If this is a debugging task, use `superpowers:systematic-debugging` first to identify the root cause, then invoke CCG for solution validation. If this is a brainstorming task, consider whether `superpowers:brainstorming` should run first to generate the option space.
 
-### Step 3: Compose Advisor Prompts
+### Step 3: Invoke Advisors
 
-Each prompt must be **self-contained** — the advisors have no access to your conversation history.
+Identify the key information for the advisors:
+- **task**: what to analyze or decide (1-3 sentences, from conversation context)
+- **files**: which source files are most relevant (comma-separated relative paths)
+- **focus** (optional): specific aspects each advisor should emphasize
 
-Every advisor prompt MUST include:
-1. **Role assignment**: what expert persona the advisor should adopt
-2. **Context**: project info, relevant file paths to read, constraints
-3. **Task**: exactly what to analyze or decide
-4. **Output format**: structured format you expect back (bullets, table, trade-offs)
-5. **Anti-slop directive**: "Be specific and concrete. No generic advice. Reference actual code and line numbers."
+ccg-compose.js handles preamble injection, project context auto-detection, file content inclusion (with sanitization), CLI spawning, output validation, and artifact persistence.
 
-Write prompts to temp files to avoid shell escaping issues:
+Run both advisors in parallel:
 
-```bash
-cat > /tmp/ccg-codex-prompt.md << 'CODEX_EOF'
-<prompt content>
-CODEX_EOF
+    node skills/tri-model-advisor/ccg-compose.js codex \
+      --mode <MODE> \
+      --task "<task description>" \
+      --files "<file1,file2,...>" \
+      [--focus "<codex-specific focus>"] \
+      > /tmp/ccg-codex-out.txt 2>/dev/null &
+    CODEX_PID=$!
 
-cat > /tmp/ccg-gemini-prompt.md << 'GEMINI_EOF'
-<prompt content>
-GEMINI_EOF
-```
+    node skills/tri-model-advisor/ccg-compose.js gemini \
+      --mode <MODE> \
+      --task "<task description>" \
+      --files "<file1,file2,...>" \
+      [--focus "<gemini-specific focus>"] \
+      > /tmp/ccg-gemini-out.txt 2>/dev/null &
+    GEMINI_PID=$!
 
-See `tri-model-advisor/advisor-prompts.md` for role templates per mode.
+    wait $CODEX_PID 2>/dev/null
+    wait $GEMINI_PID 2>/dev/null
 
-### Step 4: Invoke Advisors in Parallel
+Read both output files. If an output is empty, check `.ccg/artifacts/` for the artifact which includes stderr logs and quality status.
 
-Run both simultaneously. Capture output to files for reliable reading.
-
-**Standard invocation:**
-```bash
-env -u RUST_LOG -u RUST_BACKTRACE -u RUST_LIB_BACKTRACE \
-  codex exec --full-auto --skip-git-repo-check \
-  "$(cat /tmp/ccg-codex-prompt.md)" \
-  > /tmp/ccg-codex-out.txt 2>&1 &
-CODEX_PID=$!
-
-gemini -p "$(cat /tmp/ccg-gemini-prompt.md)" \
-  --approval-mode=yolo -m auto \
-  > /tmp/ccg-gemini-out.txt 2>&1 &
-GEMINI_PID=$!
-
-wait $CODEX_PID 2>/dev/null; CODEX_EXIT=$?
-wait $GEMINI_PID 2>/dev/null; GEMINI_EXIT=$?
-echo "Codex exit: $CODEX_EXIT | Gemini exit: $GEMINI_EXIT"
-```
-
-**REVIEW mode** — use Codex's dedicated review subcommand:
-```bash
-codex review --uncommitted > /tmp/ccg-codex-out.txt 2>&1 &
-# or: codex review --base main
-```
-
-**Fallback**: If `--full-auto` fails due to sandbox restrictions, retry Codex with `--dangerously-bypass-approvals-and-sandbox`.
-
-### Step 5: Validate Output
-
-Read both outputs. Before synthesizing, validate:
-
-```bash
-cat /tmp/ccg-codex-out.txt
-cat /tmp/ccg-gemini-out.txt
-```
-
-| Condition | Action |
-|---|---|
-| Output is empty | Mark advisor as FAILED, note in synthesis |
-| Output is only error/stack trace | Mark as FAILED, include error context |
-| Output is truncated (mid-sentence) | Mark as PARTIAL, use what's available |
-| Output is generic/unhelpful slop | Mark as LOW-QUALITY, reduce its weight |
-| Output is substantive | Mark as OK, full weight |
-
-### Step 6: Persist Artifacts
-
-```bash
-mkdir -p .ccg/artifacts
-TIMESTAMP=$(date -u +"%Y%m%d-%H%M%S")
-```
-
-Write artifacts to `.ccg/artifacts/<provider>-<timestamp>.md`. See format in `tri-model-advisor/artifact-format.md`.
-
-### Step 7: Synthesize (Aggregator Phase)
+### Step 4: Synthesize (Aggregator Phase)
 
 This is the core of the MoA pattern. Claude acts as the aggregator.
 
@@ -198,7 +150,7 @@ This is the core of the MoA pattern. Claude acts as the aggregator.
 > - Which advisor was most relevant for this specific request
 > - Missing perspectives, timeouts, quality issues
 
-### Step 8: Debate Round (Optional)
+### Step 5: Debate Round (Optional)
 
 Trigger a debate round when:
 - Advisors strongly disagree on a critical point
@@ -207,31 +159,27 @@ Trigger a debate round when:
 
 **Protocol**: Send each advisor the other's key argument and ask them to respond:
 
-```bash
-# Write debate prompts including the other advisor's position
-cat > /tmp/ccg-codex-debate.md << 'DEBATE_EOF'
-A peer reviewer (Gemini) analyzed the same problem and concluded:
-<paste Gemini's key argument>
+Compose a debate prompt that includes the peer's argument and the advisor's original position (see `debate-protocol.md` for the template). Then run through ccg-compose.js:
 
-You previously recommended:
-<paste Codex's key argument>
+    node skills/tri-model-advisor/ccg-compose.js codex \
+      --mode <MODE> \
+      --task "<debate prompt including peer's argument>" \
+      > /tmp/ccg-codex-debate-out.txt 2>/dev/null
 
-Do you still hold your position? If so, provide stronger evidence.
-If the peer raises valid points, revise your recommendation.
-Be specific — reference code and concrete trade-offs.
-DEBATE_EOF
-```
+    node skills/tri-model-advisor/ccg-compose.js gemini \
+      --mode <MODE> \
+      --task "<debate prompt including peer's argument>" \
+      > /tmp/ccg-gemini-debate-out.txt 2>/dev/null
 
-Run the debate prompts the same way as Step 4. Then re-synthesize with the enriched context.
+Re-synthesize with the enriched context.
 
 **Limit**: Maximum 1 debate round. More rounds do not reliably improve accuracy (per ICLR 2025 MAD research). The value is in surfacing stronger evidence, not in reaching forced consensus.
 
-### Step 9: Cleanup
+### Step 6: Cleanup
 
 ```bash
-rm -f /tmp/ccg-codex-prompt.md /tmp/ccg-gemini-prompt.md \
-      /tmp/ccg-codex-out.txt /tmp/ccg-gemini-out.txt \
-      /tmp/ccg-codex-debate.md /tmp/ccg-gemini-debate.md
+rm -f /tmp/ccg-codex-out.txt /tmp/ccg-gemini-out.txt \
+      /tmp/ccg-codex-debate-out.txt /tmp/ccg-gemini-debate-out.txt
 ```
 
 Artifacts in `.ccg/artifacts/` are kept for future reference.

@@ -41,6 +41,18 @@ Be specific. No generic rebuttals.
 
 Send the template above to BOTH advisors, each seeing the other's argument. This produces two refined responses.
 
+Run debate prompts through ccg-compose.js:
+
+    node skills/tri-model-advisor/ccg-compose.js codex \
+      --mode <MODE> \
+      --task "<debate prompt including peer's argument>" \
+      > /tmp/ccg-codex-debate-out.txt 2>/dev/null
+
+    node skills/tri-model-advisor/ccg-compose.js gemini \
+      --mode <MODE> \
+      --task "<debate prompt including peer's argument>" \
+      > /tmp/ccg-gemini-debate-out.txt 2>/dev/null
+
 ## Reading Debate Output
 
 When synthesizing after debate:
